@@ -2,9 +2,9 @@ name: Flutter CI/CD Build
 
 on:
   push:
-    branches:[ "main", "master" ]
-  pull_request:
     branches: [ "main", "master" ]
+  pull_request:
+    branches:[ "main", "master" ]
 
 jobs:
   build:
@@ -26,7 +26,7 @@ jobs:
           channel: 'stable'
           flutter-version: '3.19.0'
 
-      # FIX: Generates the missing 'android/' folder and Gradle files on the fly
+      # Generates the missing 'android/' folder and Gradle files on the fly
       - name: Generate missing Flutter platform files
         run: flutter create .
 
