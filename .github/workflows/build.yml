@@ -2,7 +2,7 @@ name: Flutter CI/CD Build
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches:[ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
 
@@ -24,7 +24,11 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-          flutter-version: '3.19.0' # Adjust based on the latest available stable, completely compatible with SDK limits
+          flutter-version: '3.19.0'
+
+      # FIX: Generates the missing 'android/' folder and Gradle files on the fly
+      - name: Generate missing Flutter platform files
+        run: flutter create .
 
       - name: Install dependencies
         run: flutter pub get
