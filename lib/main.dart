@@ -1,0 +1,800 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:fl_chart/fl_chart.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:intl/intl.dart';
+import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(
+    MultiProvider(
+      providers:[
+        ChangeNotifierProvider(create: (_) => AppState()..loadData()),
+      ],
+      child: const ProTestApp(),
+    ),
+  );
+}
+
+class ProTestApp extends StatelessWidget {
+  const ProTestApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'ProTest',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple, brightness: Brightness.light),
+        useMaterial3: true,
+        appBarTheme: const AppBarTheme(
+          centerTitle: true,
+          elevation: 0,
+        ),
+      ),
+      darkTheme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple, brightness: Brightness.dark),
+        useMaterial3: true,
+      ),
+      themeMode: ThemeMode.system,
+      home: const MainNavigationScreen(),
+    );
+  }
+}
+
+// ==========================================
+// MODELS
+// ==========================================
+
+class Question {
+  final String id;
+  final String category;
+  final String text;
+  final List<String> options;
+  final int correctAnswerIndex;
+
+  Question({
+    required this.id,
+    required this.category,
+    required this.text,
+    required this.options,
+    required this.correctAnswerIndex,
+  });
+
+  factory Question.fromJson(Map<String, dynamic> json) {
+    return Question(
+      id: json['id']?.toString() ?? DateTime.now().millisecondsSinceEpoch.toString(),
+      category: json['category'] ?? 'Uncategorized',
+      text: json['text'] ?? '',
+      options: List<String>.from(json['options'] ?? []),
+      correctAnswerIndex: json['correctAnswerIndex'] ?? 0,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'category': category,
+        'text': text,
+        'options': options,
+        'correctAnswerIndex': correctAnswerIndex,
+      };
+}
+
+class TestSession {
+  final String category;
+  final int score;
+  final int totalQuestions;
+  final int durationSeconds;
+  final int timestamp;
+
+  TestSession({
+    required this.category,
+    required this.score,
+    required this.totalQuestions,
+    required this.durationSeconds,
+    required this.timestamp,
+  });
+
+  factory TestSession.fromJson(Map<String, dynamic> json) {
+    return TestSession(
+      category: json['category'] ?? 'Unknown',
+      score: json['score'] ?? 0,
+      totalQuestions: json['totalQuestions'] ?? 0,
+      durationSeconds: json['durationSeconds'] ?? 0,
+      timestamp: json['timestamp'] ?? 0,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'category': category,
+        'score': score,
+        'totalQuestions': totalQuestions,
+        'durationSeconds': durationSeconds,
+        'timestamp': timestamp,
+      };
+}
+
+// ==========================================
+// STATE MANAGEMENT (PROVIDER)
+// ==========================================
+
+class AppState extends ChangeNotifier {
+  List<Question> _questions =[];
+  List<TestSession> _sessions =[];
+  bool _isLoading = true;
+
+  List<Question> get questions => _questions;
+  List<TestSession> get sessions => _sessions;
+  bool get isLoading => _isLoading;
+
+  Future<void> loadData() async {
+    final prefs = await SharedPreferences.getInstance();
+    
+    // Load Questions
+    final questionsJson = prefs.getString('questions');
+    if (questionsJson != null) {
+      Iterable decoded = jsonDecode(questionsJson);
+      _questions = decoded.map((q) => Question.fromJson(q)).toList();
+    } else {
+      _loadDefaultQuestions();
+    }
+
+    // Load Sessions
+    final sessionsJson = prefs.getString('sessions');
+    if (sessionsJson != null) {
+      Iterable decoded = jsonDecode(sessionsJson);
+      _sessions = decoded.map((s) => TestSession.fromJson(s)).toList();
+    }
+
+    _isLoading = false;
+    notifyListeners();
+  }
+
+  Future<void> saveData() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('questions', jsonEncode(_questions.map((q) => q.toJson()).toList()));
+    await prefs.setString('sessions', jsonEncode(_sessions.map((s) => s.toJson()).toList()));
+  }
+
+  Future<bool> importQuestionsJson() async {
+    try {
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json', 'txt'],
+      );
+
+      if (result != null && result.files.single.path != null) {
+        File file = File(result.files.single.path!);
+        String contents = await file.readAsString();
+        Iterable decoded = jsonDecode(contents);
+        
+        List<Question> newQuestions = decoded.map((q) => Question.fromJson(q)).toList();
+        _questions.addAll(newQuestions);
+        await saveData();
+        notifyListeners();
+        return true;
+      }
+    } catch (e) {
+      debugPrint("Error parsing JSON: $e");
+    }
+    return false;
+  }
+
+  void addSession(TestSession session) {
+    _sessions.add(session);
+    saveData();
+    notifyListeners();
+  }
+
+  List<String> getCategories() {
+    return _questions.map((q) => q.category).toSet().toList();
+  }
+
+  List<Question> getQuestionsByCategory(String category) {
+    return _questions.where((q) => q.category == category).toList();
+  }
+
+  void _loadDefaultQuestions() {
+    const String defaultJson = '''[
+      {
+        "id": "1",
+        "category": "Computer Science",
+        "text": "What is the time complexity of binary search?\\n\\n*Hint: It divides the search interval in half.*",
+        "options":["O(1)", "O(n)", "O(log n)", "O(n^2)"],
+        "correctAnswerIndex": 2
+      },
+      {
+        "id": "2",
+        "category": "Mathematics",
+        "text": "Evaluate the following:\\n\\n `2 + 2 * 2`",
+        "options":["4", "6", "8", "10"],
+        "correctAnswerIndex": 1
+      }
+    ]
+    ''';
+    Iterable decoded = jsonDecode(defaultJson);
+    _questions = decoded.map((q) => Question.fromJson(q)).toList();
+    saveData();
+  }
+}
+
+// ==========================================
+// UI SCREENS
+// ==========================================
+
+class MainNavigationScreen extends StatefulWidget {
+  const MainNavigationScreen({super.key});
+
+  @override
+  State<MainNavigationScreen> createState() => _MainNavigationScreenState();
+}
+
+class _MainNavigationScreenState extends State<MainNavigationScreen> {
+  int _currentIndex = 0;
+  final List<Widget> _screens = const [
+    HomeScreen(),
+    StatsScreen(),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: _screens[_currentIndex],
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _currentIndex,
+        onDestinationSelected: (idx) => setState(() => _currentIndex = idx),
+        destinations: const[
+          NavigationDestination(icon: Icon(Icons.quiz), label: 'Tests'),
+          NavigationDestination(icon: Icon(Icons.analytics), label: 'Stats'),
+        ],
+      ),
+    );
+  }
+}
+
+// --- HOME SCREEN ---
+
+class HomeScreen extends StatelessWidget {
+  const HomeScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final appState = context.watch<AppState>();
+    final categories = appState.getCategories();
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Available Tests', style: TextStyle(fontWeight: FontWeight.bold)),
+        actions:[
+          IconButton(
+            tooltip: 'Import JSON',
+            icon: const Icon(Icons.file_upload),
+            onPressed: () async {
+              bool success = await context.read<AppState>().importQuestionsJson();
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(success ? 'Questions imported successfully!' : 'Failed to import JSON.'),
+                    backgroundColor: success ? Colors.green : Colors.red,
+                  ),
+                );
+              }
+            },
+          ),
+        ],
+      ),
+      body: appState.isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : categories.isEmpty
+              ? const Center(child: Text('No questions found. Import a JSON file.'))
+              : GridView.builder(
+                  padding: const EdgeInsets.all(16),
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 2,
+                    crossAxisSpacing: 16,
+                    mainAxisSpacing: 16,
+                    childAspectRatio: 1.2,
+                  ),
+                  itemCount: categories.length,
+                  itemBuilder: (context, index) {
+                    final category = categories[index];
+                    final qCount = appState.getQuestionsByCategory(category).length;
+                    return Card(
+                      elevation: 2,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(16),
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => TestScreen(
+                                category: category,
+                                questions: appState.getQuestionsByCategory(category)..shuffle(),
+                              ),
+                            ),
+                          );
+                        },
+                        child: Padding(
+                          padding: const EdgeInsets.all(16.0),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children:[
+                              const Icon(Icons.library_books, size: 40, color: Colors.deepPurple),
+                              const SizedBox(height: 12),
+                              Text(
+                                category,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                              ),
+                              const SizedBox(height: 4),
+                              Text('$qCount Questions', style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+    );
+  }
+}
+
+// --- TEST TAKING SCREEN ---
+
+class TestScreen extends StatefulWidget {
+  final String category;
+  final List<Question> questions;
+
+  const TestScreen({super.key, required this.category, required this.questions});
+
+  @override
+  State<TestScreen> createState() => _TestScreenState();
+}
+
+class _TestScreenState extends State<TestScreen> {
+  int _currentIndex = 0;
+  final Map<int, int> _selectedAnswers = {};
+  late Stopwatch _stopwatch;
+  late Timer _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _stopwatch = Stopwatch()..start();
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      setState(() {}); 
+    });
+  }
+
+  @override
+  void dispose() {
+    _stopwatch.stop();
+    _timer.cancel();
+    super.dispose();
+  }
+
+  void _submitTest() {
+    _stopwatch.stop();
+    int score = 0;
+    for (int i = 0; i < widget.questions.length; i++) {
+      if (_selectedAnswers[i] == widget.questions[i].correctAnswerIndex) {
+        score++;
+      }
+    }
+
+    final session = TestSession(
+      category: widget.category,
+      score: score,
+      totalQuestions: widget.questions.length,
+      durationSeconds: _stopwatch.elapsed.inSeconds,
+      timestamp: DateTime.now().millisecondsSinceEpoch,
+    );
+
+    context.read<AppState>().addSession(session);
+
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (_) => ResultScreen(session: session)),
+    );
+  }
+
+  String _formatDuration(Duration d) {
+    String twoDigits(int n) => n.toString().padLeft(2, "0");
+    String twoDigitMinutes = twoDigits(d.inMinutes.remainder(60));
+    String twoDigitSeconds = twoDigits(d.inSeconds.remainder(60));
+    return "${twoDigits(d.inHours)}:$twoDigitMinutes:$twoDigitSeconds";
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final question = widget.questions[_currentIndex];
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.category),
+        actions:[
+          Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16.0),
+              child: Text(
+                _formatDuration(_stopwatch.elapsed),
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+            ),
+          )
+        ],
+      ),
+      body: SafeArea(
+        child: Column(
+          children:[
+            LinearProgressIndicator(value: (_currentIndex + 1) / widget.questions.length),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children:[
+                    Text(
+                      'Question ${_currentIndex + 1} of ${widget.questions.length}',
+                      style: TextStyle(color: Colors.grey.shade600, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 16),
+                    // Markdown Renderer for Question
+                    MarkdownBody(
+                      data: question.text,
+                      styleSheet: MarkdownStyleSheet(
+                        p: const TextStyle(fontSize: 18, height: 1.5),
+                        code: TextStyle(backgroundColor: Colors.grey.shade200, fontFamily: 'monospace', fontSize: 16),
+                        codeblockDecoration: BoxDecoration(color: Colors.grey.shade200, borderRadius: BorderRadius.circular(8)),
+                      ),
+                    ),
+                    const SizedBox(height: 32),
+                    // Options
+                    ...List.generate(question.options.length, (index) {
+                      bool isSelected = _selectedAnswers[_currentIndex] == index;
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 12.0),
+                        child: InkWell(
+                          onTap: () {
+                            setState(() {
+                              _selectedAnswers[_currentIndex] = index;
+                            });
+                          },
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: isSelected ? Theme.of(context).colorScheme.primaryContainer : Theme.of(context).cardColor,
+                              border: Border.all(
+                                color: isSelected ? Theme.of(context).colorScheme.primary : Colors.grey.shade300,
+                                width: 2,
+                              ),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            padding: const EdgeInsets.all(16),
+                            child: Row(
+                              children:[
+                                Radio<int>(
+                                  value: index,
+                                  groupValue: _selectedAnswers[_currentIndex],
+                                  onChanged: (val) {
+                                    setState(() {
+                                      _selectedAnswers[_currentIndex] = val!;
+                                    });
+                                  },
+                                ),
+                                Expanded(
+                                  child: MarkdownBody(
+                                    data: question.options[index],
+                                    styleSheet: MarkdownStyleSheet(
+                                      p: TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    })
+                  ],
+                ),
+              ),
+            ),
+            // Bottom Controls
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Theme.of(context).scaffoldBackgroundColor,
+                boxShadow:[
+                  BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, -5))
+                ],
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children:[
+                  ElevatedButton(
+                    onPressed: _currentIndex > 0 ? () => setState(() => _currentIndex--) : null,
+                    child: const Text('Previous'),
+                  ),
+                  if (_currentIndex < widget.questions.length - 1)
+                    FilledButton(
+                      onPressed: () => setState(() => _currentIndex++),
+                      child: const Text('Next'),
+                    )
+                  else
+                    FilledButton(
+                      style: FilledButton.styleFrom(backgroundColor: Colors.green),
+                      onPressed: _submitTest,
+                      child: const Text('Submit Test'),
+                    ),
+                ],
+              ),
+            )
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// --- RESULT SCREEN ---
+
+class ResultScreen extends StatelessWidget {
+  final TestSession session;
+
+  const ResultScreen({super.key, required this.session});
+
+  @override
+  Widget build(BuildContext context) {
+    double percentage = (session.score / session.totalQuestions) * 100;
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Test Result'), automaticallyImplyLeading: false),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children:[
+              Icon(
+                percentage >= 70 ? Icons.emoji_events : Icons.check_circle_outline,
+                size: 100,
+                color: percentage >= 70 ? Colors.amber : Theme.of(context).colorScheme.primary,
+              ),
+              const SizedBox(height: 24),
+              Text(
+                '${percentage.toStringAsFixed(1)}%',
+                style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold),
+              ),
+              Text(
+                'You scored ${session.score} out of ${session.totalQuestions}',
+                style: const TextStyle(fontSize: 18, color: Colors.grey),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Time Taken: ${session.durationSeconds} seconds',
+                style: const TextStyle(fontSize: 16),
+              ),
+              const SizedBox(height: 48),
+              FilledButton.icon(
+                onPressed: () => Navigator.pop(context),
+                icon: const Icon(Icons.home),
+                label: const Text('Return to Home'),
+                style: FilledButton.styleFrom(minimumSize: const Size(double.infinity, 50)),
+              )
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// --- STATS SCREEN ---
+
+class StatsScreen extends StatelessWidget {
+  const StatsScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final sessions = context.watch<AppState>().sessions;
+
+    if (sessions.isEmpty) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Advanced Stats')),
+        body: const Center(child: Text('Take some tests to see your stats here!')),
+      );
+    }
+
+    int totalTests = sessions.length;
+    int totalQuestionsAttempted = sessions.fold(0, (sum, s) => sum + s.totalQuestions);
+    int totalCorrect = sessions.fold(0, (sum, s) => sum + s.score);
+    double globalAccuracy = totalQuestionsAttempted == 0 ? 0 : (totalCorrect / totalQuestionsAttempted) * 100;
+    int totalTimeSeconds = sessions.fold(0, (sum, s) => sum + s.durationSeconds);
+
+    // Group for Bar Chart
+    Map<String, List<TestSession>> sessionsByCategory = {};
+    for (var s in sessions) {
+      sessionsByCategory.putIfAbsent(s.category, () =>[]).add(s);
+    }
+
+    List<BarChartGroupData> barGroups = [];
+    int xIndex = 0;
+    List<String> categoryLabels =[];
+
+    sessionsByCategory.forEach((category, catSessions) {
+      int catAttempted = catSessions.fold(0, (sum, s) => sum + s.totalQuestions);
+      int catCorrect = catSessions.fold(0, (sum, s) => sum + s.score);
+      double accuracy = catAttempted == 0 ? 0 : (catCorrect / catAttempted) * 100;
+
+      barGroups.add(
+        BarChartGroupData(
+          x: xIndex,
+          barRods:[
+            BarChartRodData(
+              toY: accuracy,
+              color: Colors.deepPurple,
+              width: 20,
+              borderRadius: BorderRadius.circular(4),
+              backDrawRodData: BackgroundBarChartRodData(
+                show: true,
+                toY: 100,
+                color: Colors.deepPurple.withOpacity(0.1),
+              ),
+            )
+          ],
+        ),
+      );
+      categoryLabels.add(category);
+      xIndex++;
+    });
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Advanced Stats', style: TextStyle(fontWeight: FontWeight.bold))),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children:[
+            // Summary Cards
+            Row(
+              children:[
+                Expanded(child: _buildStatCard(context, 'Total Tests', '$totalTests', Icons.quiz)),
+                const SizedBox(width: 16),
+                Expanded(child: _buildStatCard(context, 'Accuracy', '${globalAccuracy.toStringAsFixed(1)}%', Icons.track_changes)),
+              ],
+            ),
+            const SizedBox(height: 16),
+            _buildStatCard(
+                context,
+                'Total Time Spent',
+                '${(totalTimeSeconds / 60).toStringAsFixed(1)} minutes',
+                Icons.timer,
+                isFullWidth: true),
+            const SizedBox(height: 32),
+            const Text('Accuracy by Category', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 24),
+            // Chart
+            SizedBox(
+              height: 300,
+              child: BarChart(
+                BarChartData(
+                  alignment: BarChartAlignment.spaceAround,
+                  maxY: 100,
+                  barTouchData: BarTouchData(
+                    touchTooltipData: BarTouchTooltipData(
+                      getTooltipColor: (_) => Colors.blueGrey,
+                      getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                        return BarTooltipItem(
+                          '${categoryLabels[group.x.toInt()]}\n',
+                          const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                          children: <TextSpan>[
+                            TextSpan(
+                              text: '${rod.toY.toStringAsFixed(1)}%',
+                              style: const TextStyle(color: Colors.yellow, fontWeight: FontWeight.w500),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                  ),
+                  titlesData: FlTitlesData(
+                    show: true,
+                    bottomTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        getTitlesWidget: (double value, TitleMeta meta) {
+                          if (value.toInt() >= categoryLabels.length) return const SizedBox.shrink();
+                          // Show abbreviated name if too long
+                          String text = categoryLabels[value.toInt()];
+                          if (text.length > 8) text = '${text.substring(0, 6)}..';
+                          return Padding(
+                            padding: const EdgeInsets.only(top: 8.0),
+                            child: Text(text, style: const TextStyle(fontSize: 10)),
+                          );
+                        },
+                      ),
+                    ),
+                    leftTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 40,
+                        getTitlesWidget: (value, meta) {
+                          return Text('${value.toInt()}%', style: const TextStyle(fontSize: 12));
+                        },
+                      ),
+                    ),
+                    topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                    rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                  ),
+                  gridData: FlGridData(
+                    show: true,
+                    drawVerticalLine: false,
+                    horizontalInterval: 20,
+                    getDrawingHorizontalLine: (value) => FlLine(color: Colors.grey.shade300, strokeWidth: 1),
+                  ),
+                  borderData: FlBorderData(show: false),
+                  barGroups: barGroups,
+                ),
+              ),
+            ),
+            const SizedBox(height: 32),
+            const Text('Recent Sessions', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            ListView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: sessions.reversed.take(5).length,
+              itemBuilder: (context, index) {
+                final session = sessions.reversed.toList()[index];
+                final date = DateTime.fromMillisecondsSinceEpoch(session.timestamp);
+                return ListTile(
+                  leading: const CircleAvatar(child: Icon(Icons.history)),
+                  title: Text(session.category),
+                  subtitle: Text(DateFormat('MMM dd, yyyy - hh:mm a').format(date)),
+                  trailing: Text(
+                    '${session.score}/${session.totalQuestions}',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatCard(BuildContext context, String title, String value, IconData icon, {bool isFullWidth = false}) {
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children:[
+                Icon(icon, color: Theme.of(context).colorScheme.primary, size: 20),
+                const SizedBox(width: 8),
+                Text(title, style: TextStyle(color: Colors.grey.shade600, fontWeight: FontWeight.w500)),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(value, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+          ],
+        ),
+      ),
+    );
+  }
+}
