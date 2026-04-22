@@ -13,8 +13,6 @@ dependencies:
   provider: ^6.1.2
   # Local Storage Persistence
   shared_preferences: ^2.2.3
-  # JSON File Importing
-  file_picker: ^8.0.3
   # Markdown rendering for questions and choices
   flutter_markdown: ^0.7.2
   # Advanced Stats / Charts
