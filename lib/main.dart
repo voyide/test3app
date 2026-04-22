@@ -1,9 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:fl_chart/fl_chart.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:intl/intl.dart';
@@ -72,7 +70,7 @@ class Question {
       id: json['id']?.toString() ?? DateTime.now().millisecondsSinceEpoch.toString(),
       category: json['category'] ?? 'Uncategorized',
       text: json['text'] ?? '',
-      options: List<String>.from(json['options'] ?? []),
+      options: List<String>.from(json['options'] ??[]),
       correctAnswerIndex: json['correctAnswerIndex'] ?? 0,
     );
   }
@@ -125,7 +123,7 @@ class TestSession {
 // ==========================================
 
 class AppState extends ChangeNotifier {
-  List<Question> _questions =[];
+  List<Question> _questions = [];
   List<TestSession> _sessions =[];
   bool _isLoading = true;
 
@@ -162,28 +160,21 @@ class AppState extends ChangeNotifier {
     await prefs.setString('sessions', jsonEncode(_sessions.map((s) => s.toJson()).toList()));
   }
 
-  Future<bool> importQuestionsJson() async {
+  Future<bool> importQuestionsFromString(String jsonString) async {
     try {
-      FilePickerResult? result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['json', 'txt'],
-      );
-
-      if (result != null && result.files.single.path != null) {
-        File file = File(result.files.single.path!);
-        String contents = await file.readAsString();
-        Iterable decoded = jsonDecode(contents);
-        
-        List<Question> newQuestions = decoded.map((q) => Question.fromJson(q)).toList();
-        _questions.addAll(newQuestions);
-        await saveData();
-        notifyListeners();
-        return true;
-      }
+      if (jsonString.trim().isEmpty) return false;
+      
+      Iterable decoded = jsonDecode(jsonString);
+      List<Question> newQuestions = decoded.map((q) => Question.fromJson(q)).toList();
+      
+      _questions.addAll(newQuestions);
+      await saveData();
+      notifyListeners();
+      return true;
     } catch (e) {
-      debugPrint("Error parsing JSON: $e");
+      debugPrint("Error parsing JSON string: $e");
+      return false;
     }
-    return false;
   }
 
   void addSession(TestSession session) {
@@ -237,7 +228,7 @@ class MainNavigationScreen extends StatefulWidget {
 
 class _MainNavigationScreenState extends State<MainNavigationScreen> {
   int _currentIndex = 0;
-  final List<Widget> _screens = const [
+  final List<Widget> _screens = const[
     HomeScreen(),
     StatsScreen(),
   ];
@@ -263,6 +254,50 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
+  void _showImportDialog(BuildContext context) {
+    final TextEditingController controller = TextEditingController();
+    
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Paste JSON'),
+          content: TextField(
+            controller: controller,
+            maxLines: 10,
+            decoration: const InputDecoration(
+              hintText: 'Paste your JSON array here...',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          actions:[
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                final appState = context.read<AppState>();
+                bool success = await appState.importQuestionsFromString(controller.text);
+                
+                if (context.mounted) {
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(success ? 'Questions imported successfully!' : 'Failed! Invalid JSON format.'),
+                      backgroundColor: success ? Colors.green : Colors.red,
+                    ),
+                  );
+                }
+              },
+              child: const Text('Import'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppState>();
@@ -273,26 +308,16 @@ class HomeScreen extends StatelessWidget {
         title: const Text('Available Tests', style: TextStyle(fontWeight: FontWeight.bold)),
         actions:[
           IconButton(
-            tooltip: 'Import JSON',
-            icon: const Icon(Icons.file_upload),
-            onPressed: () async {
-              bool success = await context.read<AppState>().importQuestionsJson();
-              if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(success ? 'Questions imported successfully!' : 'Failed to import JSON.'),
-                    backgroundColor: success ? Colors.green : Colors.red,
-                  ),
-                );
-              }
-            },
+            tooltip: 'Paste JSON',
+            icon: const Icon(Icons.paste),
+            onPressed: () => _showImportDialog(context),
           ),
         ],
       ),
       body: appState.isLoading
           ? const Center(child: CircularProgressIndicator())
           : categories.isEmpty
-              ? const Center(child: Text('No questions found. Import a JSON file.'))
+              ? const Center(child: Text('No questions found. Paste some JSON!'))
               : GridView.builder(
                   padding: const EdgeInsets.all(16),
                   gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
@@ -416,6 +441,11 @@ class _TestScreenState extends State<TestScreen> {
   Widget build(BuildContext context) {
     final question = widget.questions[_currentIndex];
 
+    // FIX: Theme-aware colors for Markdown Code blocks
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final codeBgColor = isDark ? Colors.grey.shade800 : Colors.grey.shade200;
+    final codeTextColor = isDark ? Colors.grey.shade100 : Colors.black87;
+
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.category),
@@ -443,19 +473,30 @@ class _TestScreenState extends State<TestScreen> {
                   children:[
                     Text(
                       'Question ${_currentIndex + 1} of ${widget.questions.length}',
-                      style: TextStyle(color: Colors.grey.shade600, fontWeight: FontWeight.w600),
+                      style: TextStyle(color: Colors.grey.shade500, fontWeight: FontWeight.w600),
                     ),
                     const SizedBox(height: 16),
-                    // Markdown Renderer for Question
+                    
+                    // Markdown Renderer for Question with Dynamic Styling
                     MarkdownBody(
                       data: question.text,
                       styleSheet: MarkdownStyleSheet(
                         p: const TextStyle(fontSize: 18, height: 1.5),
-                        code: TextStyle(backgroundColor: Colors.grey.shade200, fontFamily: 'monospace', fontSize: 16),
-                        codeblockDecoration: BoxDecoration(color: Colors.grey.shade200, borderRadius: BorderRadius.circular(8)),
+                        code: TextStyle(
+                          backgroundColor: codeBgColor, 
+                          color: codeTextColor, 
+                          fontFamily: 'monospace', 
+                          fontSize: 16
+                        ),
+                        codeblockDecoration: BoxDecoration(
+                          color: codeBgColor, 
+                          borderRadius: BorderRadius.circular(8)
+                        ),
                       ),
                     ),
+                    
                     const SizedBox(height: 32),
+                    
                     // Options
                     ...List.generate(question.options.length, (index) {
                       bool isSelected = _selectedAnswers[_currentIndex] == index;
@@ -471,7 +512,7 @@ class _TestScreenState extends State<TestScreen> {
                             decoration: BoxDecoration(
                               color: isSelected ? Theme.of(context).colorScheme.primaryContainer : Theme.of(context).cardColor,
                               border: Border.all(
-                                color: isSelected ? Theme.of(context).colorScheme.primary : Colors.grey.shade300,
+                                color: isSelected ? Theme.of(context).colorScheme.primary : (isDark ? Colors.grey.shade700 : Colors.grey.shade300),
                                 width: 2,
                               ),
                               borderRadius: BorderRadius.circular(12),
@@ -489,12 +530,23 @@ class _TestScreenState extends State<TestScreen> {
                                   },
                                 ),
                                 Expanded(
+                                  // Applied the exact same dynamic styling to option code chunks
                                   child: MarkdownBody(
                                     data: question.options[index],
                                     styleSheet: MarkdownStyleSheet(
                                       p: TextStyle(
                                         fontSize: 16,
                                         fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                      ),
+                                      code: TextStyle(
+                                        backgroundColor: codeBgColor, 
+                                        color: codeTextColor, 
+                                        fontFamily: 'monospace', 
+                                        fontSize: 15
+                                      ),
+                                      codeblockDecoration: BoxDecoration(
+                                        color: codeBgColor, 
+                                        borderRadius: BorderRadius.circular(6)
                                       ),
                                     ),
                                   ),
@@ -627,7 +679,7 @@ class StatsScreen extends StatelessWidget {
       sessionsByCategory.putIfAbsent(s.category, () =>[]).add(s);
     }
 
-    List<BarChartGroupData> barGroups = [];
+    List<BarChartGroupData> barGroups =[];
     int xIndex = 0;
     List<String> categoryLabels =[];
 
@@ -664,7 +716,7 @@ class StatsScreen extends StatelessWidget {
         padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          children:[
+          children: [
             // Summary Cards
             Row(
               children:[
@@ -714,7 +766,6 @@ class StatsScreen extends StatelessWidget {
                         showTitles: true,
                         getTitlesWidget: (double value, TitleMeta meta) {
                           if (value.toInt() >= categoryLabels.length) return const SizedBox.shrink();
-                          // Show abbreviated name if too long
                           String text = categoryLabels[value.toInt()];
                           if (text.length > 8) text = '${text.substring(0, 6)}..';
                           return Padding(
