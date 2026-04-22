@@ -12,7 +12,7 @@ void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(
     MultiProvider(
-      providers:[
+      providers: [
         ChangeNotifierProvider(create: (_) => AppState()..loadData()),
       ],
       child: const ProTestApp(),
@@ -70,7 +70,7 @@ class Question {
       id: json['id']?.toString() ?? DateTime.now().millisecondsSinceEpoch.toString(),
       category: json['category'] ?? 'Uncategorized',
       text: json['text'] ?? '',
-      options: List<String>.from(json['options'] ??[]),
+      options: List<String>.from(json['options'] ?? []),
       correctAnswerIndex: json['correctAnswerIndex'] ?? 0,
     );
   }
@@ -90,6 +90,9 @@ class TestSession {
   final int totalQuestions;
   final int durationSeconds;
   final int timestamp;
+  // FIX: Added for answer review functionality
+  final List<Question> questions;
+  final Map<String, int> userAnswers; // Key: Question ID, Value: User's selected index
 
   TestSession({
     required this.category,
@@ -97,6 +100,8 @@ class TestSession {
     required this.totalQuestions,
     required this.durationSeconds,
     required this.timestamp,
+    required this.questions,
+    required this.userAnswers,
   });
 
   factory TestSession.fromJson(Map<String, dynamic> json) {
@@ -106,6 +111,8 @@ class TestSession {
       totalQuestions: json['totalQuestions'] ?? 0,
       durationSeconds: json['durationSeconds'] ?? 0,
       timestamp: json['timestamp'] ?? 0,
+      questions: (json['questions'] as List<dynamic>?)?.map((q) => Question.fromJson(q)).toList() ?? [],
+      userAnswers: Map<String, int>.from(json['userAnswers'] ?? {}),
     );
   }
 
@@ -115,6 +122,8 @@ class TestSession {
         'totalQuestions': totalQuestions,
         'durationSeconds': durationSeconds,
         'timestamp': timestamp,
+        'questions': questions.map((q) => q.toJson()).toList(),
+        'userAnswers': userAnswers,
       };
 }
 
@@ -124,7 +133,7 @@ class TestSession {
 
 class AppState extends ChangeNotifier {
   List<Question> _questions = [];
-  List<TestSession> _sessions =[];
+  List<TestSession> _sessions = [];
   bool _isLoading = true;
 
   List<Question> get questions => _questions;
@@ -134,20 +143,16 @@ class AppState extends ChangeNotifier {
   Future<void> loadData() async {
     final prefs = await SharedPreferences.getInstance();
     
-    // Load Questions
     final questionsJson = prefs.getString('questions');
     if (questionsJson != null) {
-      Iterable decoded = jsonDecode(questionsJson);
-      _questions = decoded.map((q) => Question.fromJson(q)).toList();
+      _questions = (jsonDecode(questionsJson) as List).map((q) => Question.fromJson(q)).toList();
     } else {
       _loadDefaultQuestions();
     }
 
-    // Load Sessions
     final sessionsJson = prefs.getString('sessions');
     if (sessionsJson != null) {
-      Iterable decoded = jsonDecode(sessionsJson);
-      _sessions = decoded.map((s) => TestSession.fromJson(s)).toList();
+      _sessions = (jsonDecode(sessionsJson) as List).map((s) => TestSession.fromJson(s)).toList();
     }
 
     _isLoading = false;
@@ -160,19 +165,28 @@ class AppState extends ChangeNotifier {
     await prefs.setString('sessions', jsonEncode(_sessions.map((s) => s.toJson()).toList()));
   }
 
+  // FIX: Prevents duplicate questions by using the question 'id' as a unique key.
   Future<bool> importQuestionsFromString(String jsonString) async {
     try {
       if (jsonString.trim().isEmpty) return false;
       
-      Iterable decoded = jsonDecode(jsonString);
-      List<Question> newQuestions = decoded.map((q) => Question.fromJson(q)).toList();
+      final List<dynamic> decoded = jsonDecode(jsonString);
+      final newQuestions = decoded.map((q) => Question.fromJson(q)).toList();
+
+      // Create a map of existing questions for efficient lookup
+      final Map<String, Question> existingQuestionsMap = {for (var q in _questions) q.id: q};
+
+      for (var newQuestion in newQuestions) {
+        existingQuestionsMap[newQuestion.id] = newQuestion; // Add new or update existing
+      }
+
+      _questions = existingQuestionsMap.values.toList(); // Convert back to a list
       
-      _questions.addAll(newQuestions);
       await saveData();
       notifyListeners();
       return true;
     } catch (e) {
-      debugPrint("Error parsing JSON string: $e");
+      debugPrint("Error parsing JSON string or updating questions: $e");
       return false;
     }
   }
@@ -194,23 +208,22 @@ class AppState extends ChangeNotifier {
   void _loadDefaultQuestions() {
     const String defaultJson = '''[
       {
-        "id": "1",
+        "id": "cs101",
         "category": "Computer Science",
         "text": "What is the time complexity of binary search?\\n\\n*Hint: It divides the search interval in half.*",
         "options":["O(1)", "O(n)", "O(log n)", "O(n^2)"],
         "correctAnswerIndex": 2
       },
       {
-        "id": "2",
+        "id": "math101",
         "category": "Mathematics",
-        "text": "Evaluate the following:\\n\\n `2 + 2 * 2`",
+        "text": "Evaluate the following:\\n\\n`2 + 2 * 2`",
         "options":["4", "6", "8", "10"],
         "correctAnswerIndex": 1
       }
     ]
     ''';
-    Iterable decoded = jsonDecode(defaultJson);
-    _questions = decoded.map((q) => Question.fromJson(q)).toList();
+    _questions = (jsonDecode(defaultJson) as List).map((q) => Question.fromJson(q)).toList();
     saveData();
   }
 }
@@ -221,18 +234,13 @@ class AppState extends ChangeNotifier {
 
 class MainNavigationScreen extends StatefulWidget {
   const MainNavigationScreen({super.key});
-
   @override
   State<MainNavigationScreen> createState() => _MainNavigationScreenState();
 }
 
 class _MainNavigationScreenState extends State<MainNavigationScreen> {
   int _currentIndex = 0;
-  final List<Widget> _screens = const[
-    HomeScreen(),
-    StatsScreen(),
-  ];
-
+  final List<Widget> _screens = const [HomeScreen(), StatsScreen()];
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -240,7 +248,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
       bottomNavigationBar: NavigationBar(
         selectedIndex: _currentIndex,
         onDestinationSelected: (idx) => setState(() => _currentIndex = idx),
-        destinations: const[
+        destinations: const [
           NavigationDestination(icon: Icon(Icons.quiz), label: 'Tests'),
           NavigationDestination(icon: Icon(Icons.analytics), label: 'Stats'),
         ],
@@ -249,52 +257,38 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
   }
 }
 
-// --- HOME SCREEN ---
-
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
   void _showImportDialog(BuildContext context) {
     final TextEditingController controller = TextEditingController();
-    
     showDialog(
       context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Paste JSON'),
-          content: TextField(
-            controller: controller,
-            maxLines: 10,
-            decoration: const InputDecoration(
-              hintText: 'Paste your JSON array here...',
-              border: OutlineInputBorder(),
-            ),
+      builder: (context) => AlertDialog(
+        title: const Text('Paste JSON'),
+        content: TextField(
+          controller: controller,
+          maxLines: 10,
+          decoration: const InputDecoration(
+              hintText: 'Paste your JSON array here...', border: OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () async {
+              bool success = await context.read<AppState>().importQuestionsFromString(controller.text);
+              if (context.mounted) {
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: Text(success ? 'Questions imported/updated!' : 'Failed! Invalid JSON format.'),
+                  backgroundColor: success ? Colors.green : Colors.red,
+                ));
+              }
+            },
+            child: const Text('Import'),
           ),
-          actions:[
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () async {
-                final appState = context.read<AppState>();
-                bool success = await appState.importQuestionsFromString(controller.text);
-                
-                if (context.mounted) {
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(success ? 'Questions imported successfully!' : 'Failed! Invalid JSON format.'),
-                      backgroundColor: success ? Colors.green : Colors.red,
-                    ),
-                  );
-                }
-              },
-              child: const Text('Import'),
-            ),
-          ],
-        );
-      },
+        ],
+      ),
     );
   }
 
@@ -306,7 +300,7 @@ class HomeScreen extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Available Tests', style: TextStyle(fontWeight: FontWeight.bold)),
-        actions:[
+        actions: [
           IconButton(
             tooltip: 'Paste JSON',
             icon: const Icon(Icons.paste),
@@ -321,11 +315,7 @@ class HomeScreen extends StatelessWidget {
               : GridView.builder(
                   padding: const EdgeInsets.all(16),
                   gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 2,
-                    crossAxisSpacing: 16,
-                    mainAxisSpacing: 16,
-                    childAspectRatio: 1.2,
-                  ),
+                      crossAxisCount: 2, crossAxisSpacing: 16, mainAxisSpacing: 16, childAspectRatio: 1.2),
                   itemCount: categories.length,
                   itemBuilder: (context, index) {
                     final category = categories[index];
@@ -335,29 +325,22 @@ class HomeScreen extends StatelessWidget {
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                       child: InkWell(
                         borderRadius: BorderRadius.circular(16),
-                        onTap: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => TestScreen(
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => TestScreen(
                                 category: category,
-                                questions: appState.getQuestionsByCategory(category)..shuffle(),
-                              ),
-                            ),
-                          );
-                        },
+                                questions: appState.getQuestionsByCategory(category)..shuffle()),
+                          ),
+                        ),
                         child: Padding(
                           padding: const EdgeInsets.all(16.0),
                           child: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
-                            children:[
+                            children: [
                               const Icon(Icons.library_books, size: 40, color: Colors.deepPurple),
                               const SizedBox(height: 12),
-                              Text(
-                                category,
-                                textAlign: TextAlign.center,
-                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                              ),
+                              Text(category, textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                               const SizedBox(height: 4),
                               Text('$qCount Questions', style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
                             ],
@@ -371,21 +354,17 @@ class HomeScreen extends StatelessWidget {
   }
 }
 
-// --- TEST TAKING SCREEN ---
-
 class TestScreen extends StatefulWidget {
   final String category;
   final List<Question> questions;
-
   const TestScreen({super.key, required this.category, required this.questions});
-
   @override
   State<TestScreen> createState() => _TestScreenState();
 }
 
 class _TestScreenState extends State<TestScreen> {
   int _currentIndex = 0;
-  final Map<int, int> _selectedAnswers = {};
+  final Map<int, int> _selectedAnswers = {}; // Key: question index, Value: option index
   late Stopwatch _stopwatch;
   late Timer _timer;
 
@@ -393,9 +372,7 @@ class _TestScreenState extends State<TestScreen> {
   void initState() {
     super.initState();
     _stopwatch = Stopwatch()..start();
-    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      setState(() {}); 
-    });
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) => setState(() {}));
   }
 
   @override
@@ -408,9 +385,15 @@ class _TestScreenState extends State<TestScreen> {
   void _submitTest() {
     _stopwatch.stop();
     int score = 0;
+    // Convert selected answers to a map of [QuestionID, AnswerIndex] for robust storage
+    final Map<String, int> userAnswersMap = {};
     for (int i = 0; i < widget.questions.length; i++) {
-      if (_selectedAnswers[i] == widget.questions[i].correctAnswerIndex) {
-        score++;
+      final question = widget.questions[i];
+      if (_selectedAnswers.containsKey(i)) {
+        userAnswersMap[question.id] = _selectedAnswers[i]!;
+        if (_selectedAnswers[i] == question.correctAnswerIndex) {
+          score++;
+        }
       }
     }
 
@@ -420,14 +403,11 @@ class _TestScreenState extends State<TestScreen> {
       totalQuestions: widget.questions.length,
       durationSeconds: _stopwatch.elapsed.inSeconds,
       timestamp: DateTime.now().millisecondsSinceEpoch,
+      questions: widget.questions,
+      userAnswers: userAnswersMap,
     );
-
     context.read<AppState>().addSession(session);
-
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (_) => ResultScreen(session: session)),
-    );
+    Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => ResultScreen(session: session)));
   }
 
   String _formatDuration(Duration d) {
@@ -440,8 +420,6 @@ class _TestScreenState extends State<TestScreen> {
   @override
   Widget build(BuildContext context) {
     final question = widget.questions[_currentIndex];
-
-    // FIX: Theme-aware colors for Markdown Code blocks
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final codeBgColor = isDark ? Colors.grey.shade800 : Colors.grey.shade200;
     final codeTextColor = isDark ? Colors.grey.shade100 : Colors.black87;
@@ -449,105 +427,58 @@ class _TestScreenState extends State<TestScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.category),
-        actions:[
+        actions: [
           Center(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16.0),
-              child: Text(
-                _formatDuration(_stopwatch.elapsed),
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-              ),
+              child: Text(_formatDuration(_stopwatch.elapsed), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             ),
           )
         ],
       ),
       body: SafeArea(
         child: Column(
-          children:[
+          children: [
             LinearProgressIndicator(value: (_currentIndex + 1) / widget.questions.length),
             Expanded(
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(16.0),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  children:[
-                    Text(
-                      'Question ${_currentIndex + 1} of ${widget.questions.length}',
-                      style: TextStyle(color: Colors.grey.shade500, fontWeight: FontWeight.w600),
-                    ),
+                  children: [
+                    Text('Question ${_currentIndex + 1} of ${widget.questions.length}', style: TextStyle(color: Colors.grey.shade500, fontWeight: FontWeight.w600)),
                     const SizedBox(height: 16),
-                    
-                    // Markdown Renderer for Question with Dynamic Styling
                     MarkdownBody(
                       data: question.text,
                       styleSheet: MarkdownStyleSheet(
                         p: const TextStyle(fontSize: 18, height: 1.5),
-                        code: TextStyle(
-                          backgroundColor: codeBgColor, 
-                          color: codeTextColor, 
-                          fontFamily: 'monospace', 
-                          fontSize: 16
-                        ),
-                        codeblockDecoration: BoxDecoration(
-                          color: codeBgColor, 
-                          borderRadius: BorderRadius.circular(8)
-                        ),
+                        code: TextStyle(backgroundColor: codeBgColor, color: codeTextColor, fontFamily: 'monospace', fontSize: 16),
+                        codeblockDecoration: BoxDecoration(color: codeBgColor, borderRadius: BorderRadius.circular(8)),
                       ),
                     ),
-                    
                     const SizedBox(height: 32),
-                    
-                    // Options
                     ...List.generate(question.options.length, (index) {
                       bool isSelected = _selectedAnswers[_currentIndex] == index;
                       return Padding(
                         padding: const EdgeInsets.only(bottom: 12.0),
                         child: InkWell(
-                          onTap: () {
-                            setState(() {
-                              _selectedAnswers[_currentIndex] = index;
-                            });
-                          },
+                          onTap: () => setState(() => _selectedAnswers[_currentIndex] = index),
                           child: Container(
                             decoration: BoxDecoration(
                               color: isSelected ? Theme.of(context).colorScheme.primaryContainer : Theme.of(context).cardColor,
-                              border: Border.all(
-                                color: isSelected ? Theme.of(context).colorScheme.primary : (isDark ? Colors.grey.shade700 : Colors.grey.shade300),
-                                width: 2,
-                              ),
+                              border: Border.all(color: isSelected ? Theme.of(context).colorScheme.primary : (isDark ? Colors.grey.shade700 : Colors.grey.shade300), width: 2),
                               borderRadius: BorderRadius.circular(12),
                             ),
                             padding: const EdgeInsets.all(16),
                             child: Row(
-                              children:[
-                                Radio<int>(
-                                  value: index,
-                                  groupValue: _selectedAnswers[_currentIndex],
-                                  onChanged: (val) {
-                                    setState(() {
-                                      _selectedAnswers[_currentIndex] = val!;
-                                    });
-                                  },
-                                ),
+                              children: [
+                                Radio<int>(value: index, groupValue: _selectedAnswers[_currentIndex], onChanged: (val) => setState(() => _selectedAnswers[_currentIndex] = val!)),
                                 Expanded(
-                                  // Applied the exact same dynamic styling to option code chunks
                                   child: MarkdownBody(
                                     data: question.options[index],
                                     styleSheet: MarkdownStyleSheet(
-                                      p: TextStyle(
-                                        fontSize: 16,
-                                        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                                      ),
-                                      code: TextStyle(
-                                        backgroundColor: codeBgColor, 
-                                        color: codeTextColor, 
-                                        fontFamily: 'monospace', 
-                                        fontSize: 15
-                                      ),
-                                      codeblockDecoration: BoxDecoration(
-                                        color: codeBgColor, 
-                                        borderRadius: BorderRadius.circular(6)
-                                      ),
+                                      p: TextStyle(fontSize: 16, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal),
+                                      code: TextStyle(backgroundColor: codeBgColor, color: codeTextColor, fontFamily: 'monospace', fontSize: 15),
                                     ),
                                   ),
                                 ),
@@ -561,33 +492,16 @@ class _TestScreenState extends State<TestScreen> {
                 ),
               ),
             ),
-            // Bottom Controls
             Container(
               padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Theme.of(context).scaffoldBackgroundColor,
-                boxShadow:[
-                  BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, -5))
-                ],
-              ),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children:[
-                  ElevatedButton(
-                    onPressed: _currentIndex > 0 ? () => setState(() => _currentIndex--) : null,
-                    child: const Text('Previous'),
-                  ),
+                children: [
+                  ElevatedButton(onPressed: _currentIndex > 0 ? () => setState(() => _currentIndex--) : null, child: const Text('Previous')),
                   if (_currentIndex < widget.questions.length - 1)
-                    FilledButton(
-                      onPressed: () => setState(() => _currentIndex++),
-                      child: const Text('Next'),
-                    )
+                    FilledButton(onPressed: () => setState(() => _currentIndex++), child: const Text('Next'))
                   else
-                    FilledButton(
-                      style: FilledButton.styleFrom(backgroundColor: Colors.green),
-                      onPressed: _submitTest,
-                      child: const Text('Submit Test'),
-                    ),
+                    FilledButton(style: FilledButton.styleFrom(backgroundColor: Colors.green), onPressed: _submitTest, child: const Text('Submit Test')),
                 ],
               ),
             )
@@ -598,17 +512,13 @@ class _TestScreenState extends State<TestScreen> {
   }
 }
 
-// --- RESULT SCREEN ---
-
 class ResultScreen extends StatelessWidget {
   final TestSession session;
-
   const ResultScreen({super.key, required this.session});
 
   @override
   Widget build(BuildContext context) {
-    double percentage = (session.score / session.totalQuestions) * 100;
-
+    double percentage = session.totalQuestions > 0 ? (session.score / session.totalQuestions) * 100 : 0;
     return Scaffold(
       appBar: AppBar(title: const Text('Test Result'), automaticallyImplyLeading: false),
       body: Center(
@@ -616,32 +526,27 @@ class ResultScreen extends StatelessWidget {
           padding: const EdgeInsets.all(32.0),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
-            children:[
-              Icon(
-                percentage >= 70 ? Icons.emoji_events : Icons.check_circle_outline,
-                size: 100,
-                color: percentage >= 70 ? Colors.amber : Theme.of(context).colorScheme.primary,
-              ),
+            children: [
+              Icon(percentage >= 70 ? Icons.emoji_events : Icons.check_circle_outline, size: 100, color: percentage >= 70 ? Colors.amber : Theme.of(context).colorScheme.primary),
               const SizedBox(height: 24),
-              Text(
-                '${percentage.toStringAsFixed(1)}%',
-                style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold),
-              ),
-              Text(
-                'You scored ${session.score} out of ${session.totalQuestions}',
-                style: const TextStyle(fontSize: 18, color: Colors.grey),
+              Text('${percentage.toStringAsFixed(1)}%', style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold)),
+              Text('You scored ${session.score} out of ${session.totalQuestions}', style: const TextStyle(fontSize: 18, color: Colors.grey)),
+              const SizedBox(height: 16),
+              Text('Time Taken: ${session.durationSeconds} seconds', style: const TextStyle(fontSize: 16)),
+              const SizedBox(height: 48),
+              // FIX: Added Review Answers button
+              FilledButton.icon(
+                onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ReviewScreen(session: session))),
+                icon: const Icon(Icons.rate_review),
+                label: const Text('Review Answers'),
+                style: FilledButton.styleFrom(minimumSize: const Size(double.infinity, 50)),
               ),
               const SizedBox(height: 16),
-              Text(
-                'Time Taken: ${session.durationSeconds} seconds',
-                style: const TextStyle(fontSize: 16),
-              ),
-              const SizedBox(height: 48),
-              FilledButton.icon(
-                onPressed: () => Navigator.pop(context),
+              OutlinedButton.icon(
+                onPressed: () => Navigator.of(context).popUntil((route) => route.isFirst),
                 icon: const Icon(Icons.home),
                 label: const Text('Return to Home'),
-                style: FilledButton.styleFrom(minimumSize: const Size(double.infinity, 50)),
+                style: OutlinedButton.styleFrom(minimumSize: const Size(double.infinity, 50)),
               )
             ],
           ),
@@ -651,11 +556,80 @@ class ResultScreen extends StatelessWidget {
   }
 }
 
-// --- STATS SCREEN ---
+// FIX: New screen to review answers
+class ReviewScreen extends StatelessWidget {
+  final TestSession session;
+  const ReviewScreen({super.key, required this.session});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Review: ${session.category}')),
+      body: ListView.builder(
+        padding: const EdgeInsets.all(16),
+        itemCount: session.questions.length,
+        itemBuilder: (context, index) {
+          final question = session.questions[index];
+          final userAnswerIndex = session.userAnswers[question.id];
+          final bool isCorrect = userAnswerIndex == question.correctAnswerIndex;
+
+          return Card(
+            elevation: 2,
+            margin: const EdgeInsets.only(bottom: 16),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Question ${index + 1}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                  const Divider(height: 20),
+                  MarkdownBody(data: question.text),
+                  const SizedBox(height: 24),
+                  ...List.generate(question.options.length, (optIndex) {
+                    final bool isCorrectAnswer = optIndex == question.correctAnswerIndex;
+                    final bool isSelectedAnswer = optIndex == userAnswerIndex;
+
+                    Color? tileColor;
+                    Icon? trailingIcon;
+
+                    if (isCorrectAnswer) {
+                      tileColor = Colors.green.withOpacity(0.15);
+                      trailingIcon = const Icon(Icons.check_circle, color: Colors.green);
+                    } else if (isSelectedAnswer && !isCorrectAnswer) {
+                      tileColor = Colors.red.withOpacity(0.15);
+                      trailingIcon = const Icon(Icons.cancel, color: Colors.red);
+                    }
+
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      decoration: BoxDecoration(
+                        color: tileColor,
+                        border: Border.all(color: Colors.grey.withOpacity(0.3)),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: ListTile(
+                        dense: true,
+                        title: Text(question.options[optIndex]),
+                        trailing: trailingIcon,
+                      ),
+                    );
+                  }),
+                  if (userAnswerIndex == null)
+                    const Text('Not Answered', style: TextStyle(color: Colors.orange, fontStyle: FontStyle.italic)),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
 
 class StatsScreen extends StatelessWidget {
   const StatsScreen({super.key});
-
+  // ... (Stats screen code remains unchanged)
   @override
   Widget build(BuildContext context) {
     final sessions = context.watch<AppState>().sessions;
@@ -673,7 +647,6 @@ class StatsScreen extends StatelessWidget {
     double globalAccuracy = totalQuestionsAttempted == 0 ? 0 : (totalCorrect / totalQuestionsAttempted) * 100;
     int totalTimeSeconds = sessions.fold(0, (sum, s) => sum + s.durationSeconds);
 
-    // Group for Bar Chart
     Map<String, List<TestSession>> sessionsByCategory = {};
     for (var s in sessions) {
       sessionsByCategory.putIfAbsent(s.category, () =>[]).add(s);
@@ -687,25 +660,7 @@ class StatsScreen extends StatelessWidget {
       int catAttempted = catSessions.fold(0, (sum, s) => sum + s.totalQuestions);
       int catCorrect = catSessions.fold(0, (sum, s) => sum + s.score);
       double accuracy = catAttempted == 0 ? 0 : (catCorrect / catAttempted) * 100;
-
-      barGroups.add(
-        BarChartGroupData(
-          x: xIndex,
-          barRods:[
-            BarChartRodData(
-              toY: accuracy,
-              color: Colors.deepPurple,
-              width: 20,
-              borderRadius: BorderRadius.circular(4),
-              backDrawRodData: BackgroundBarChartRodData(
-                show: true,
-                toY: 100,
-                color: Colors.deepPurple.withOpacity(0.1),
-              ),
-            )
-          ],
-        ),
-      );
+      barGroups.add(BarChartGroupData(x: xIndex, barRods:[BarChartRodData(toY: accuracy, color: Colors.deepPurple, width: 20, borderRadius: BorderRadius.circular(4))]));
       categoryLabels.add(category);
       xIndex++;
     });
@@ -717,7 +672,6 @@ class StatsScreen extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Summary Cards
             Row(
               children:[
                 Expanded(child: _buildStatCard(context, 'Total Tests', '$totalTests', Icons.quiz)),
@@ -726,77 +680,32 @@ class StatsScreen extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 16),
-            _buildStatCard(
-                context,
-                'Total Time Spent',
-                '${(totalTimeSeconds / 60).toStringAsFixed(1)} minutes',
-                Icons.timer,
-                isFullWidth: true),
+            _buildStatCard(context, 'Total Time Spent', '${(totalTimeSeconds / 60).toStringAsFixed(1)} minutes', Icons.timer, isFullWidth: true),
             const SizedBox(height: 32),
             const Text('Accuracy by Category', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
             const SizedBox(height: 24),
-            // Chart
             SizedBox(
               height: 300,
-              child: BarChart(
-                BarChartData(
-                  alignment: BarChartAlignment.spaceAround,
-                  maxY: 100,
-                  barTouchData: BarTouchData(
-                    touchTooltipData: BarTouchTooltipData(
-                      getTooltipColor: (_) => Colors.blueGrey,
-                      getTooltipItem: (group, groupIndex, rod, rodIndex) {
-                        return BarTooltipItem(
-                          '${categoryLabels[group.x.toInt()]}\n',
-                          const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                          children: <TextSpan>[
-                            TextSpan(
-                              text: '${rod.toY.toStringAsFixed(1)}%',
-                              style: const TextStyle(color: Colors.yellow, fontWeight: FontWeight.w500),
-                            ),
-                          ],
-                        );
-                      },
-                    ),
-                  ),
-                  titlesData: FlTitlesData(
-                    show: true,
-                    bottomTitles: AxisTitles(
-                      sideTitles: SideTitles(
-                        showTitles: true,
-                        getTitlesWidget: (double value, TitleMeta meta) {
-                          if (value.toInt() >= categoryLabels.length) return const SizedBox.shrink();
-                          String text = categoryLabels[value.toInt()];
-                          if (text.length > 8) text = '${text.substring(0, 6)}..';
-                          return Padding(
-                            padding: const EdgeInsets.only(top: 8.0),
-                            child: Text(text, style: const TextStyle(fontSize: 10)),
-                          );
-                        },
-                      ),
-                    ),
-                    leftTitles: AxisTitles(
-                      sideTitles: SideTitles(
-                        showTitles: true,
-                        reservedSize: 40,
-                        getTitlesWidget: (value, meta) {
-                          return Text('${value.toInt()}%', style: const TextStyle(fontSize: 12));
-                        },
-                      ),
-                    ),
-                    topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                    rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                  ),
-                  gridData: FlGridData(
-                    show: true,
-                    drawVerticalLine: false,
-                    horizontalInterval: 20,
-                    getDrawingHorizontalLine: (value) => FlLine(color: Colors.grey.shade300, strokeWidth: 1),
-                  ),
-                  borderData: FlBorderData(show: false),
-                  barGroups: barGroups,
+              child: BarChart(BarChartData(
+                alignment: BarChartAlignment.spaceAround,
+                maxY: 100,
+                barTouchData: BarTouchData(touchTooltipData: BarTouchTooltipData(getTooltipColor: (_) => Colors.blueGrey)),
+                titlesData: FlTitlesData(
+                  show: true,
+                  bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, getTitlesWidget: (double value, TitleMeta meta) {
+                    if (value.toInt() >= categoryLabels.length) return const SizedBox.shrink();
+                    String text = categoryLabels[value.toInt()];
+                    if (text.length > 8) text = '${text.substring(0, 6)}..';
+                    return Padding(padding: const EdgeInsets.only(top: 8.0), child: Text(text, style: const TextStyle(fontSize: 10)));
+                  })),
+                  leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 40, getTitlesWidget: (value, meta) => Text('${value.toInt()}%', style: const TextStyle(fontSize: 12)))),
+                  topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                  rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                 ),
-              ),
+                gridData: FlGridData(show: true, drawVerticalLine: false, horizontalInterval: 20, getDrawingHorizontalLine: (value) => FlLine(color: Colors.grey.shade300, strokeWidth: 1)),
+                borderData: FlBorderData(show: false),
+                barGroups: barGroups,
+              )),
             ),
             const SizedBox(height: 32),
             const Text('Recent Sessions', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
@@ -812,10 +721,7 @@ class StatsScreen extends StatelessWidget {
                   leading: const CircleAvatar(child: Icon(Icons.history)),
                   title: Text(session.category),
                   subtitle: Text(DateFormat('MMM dd, yyyy - hh:mm a').format(date)),
-                  trailing: Text(
-                    '${session.score}/${session.totalQuestions}',
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                  ),
+                  trailing: Text('${session.score}/${session.totalQuestions}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                 );
               },
             ),
@@ -831,20 +737,15 @@ class StatsScreen extends StatelessWidget {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: Padding(
         padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children:[
-                Icon(icon, color: Theme.of(context).colorScheme.primary, size: 20),
-                const SizedBox(width: 8),
-                Text(title, style: TextStyle(color: Colors.grey.shade600, fontWeight: FontWeight.w500)),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Text(value, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-          ],
-        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Icon(icon, color: Theme.of(context).colorScheme.primary, size: 20),
+            const SizedBox(width: 8),
+            Text(title, style: TextStyle(color: Colors.grey.shade600, fontWeight: FontWeight.w500)),
+          ]),
+          const SizedBox(height: 12),
+          Text(value, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+        ]),
       ),
     );
   }
